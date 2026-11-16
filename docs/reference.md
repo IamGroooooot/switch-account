@@ -5,7 +5,7 @@
 | Command | What it does |
 | --- | --- |
 | `list` | Prints each account and its email. `*` marks the account that new terminal sessions start as. |
-| `status [name]` | Prints the login state and the date the login ends, for one account or for all accounts. |
+| `status [name]` | Prints the login state and the date the login ends, for one account or for all accounts. Adds a `same login as <name>` line when two accounts are signed in with the same email. |
 | `add <name>` | Creates the account folder and links the shared entries of `~/.claude` into it. |
 | `login <name>` | Runs `claude auth login` as the account. Opens a browser. |
 | `use <name>` | Writes `<name>` to `$CLAUDE_ACCOUNTS_ROOT/active`. New terminal sessions start as it. |
@@ -21,15 +21,17 @@ letter or a digit.
 
 `current` decides the account in this order:
 
-1. `CLAUDE_CONFIG_DIR`, matched against the account folders.
-2. `CLAUDE_CODE_USER_EMAIL`, matched against each account's email. The Desktop
-   app's Code tab sets this variable.
+1. In a Code session of the Desktop app (`CLAUDE_CODE_ENTRYPOINT` is
+   `claude-desktop`), the Desktop window. A window that
+   `claude-account desktop <name>` opened is `<name>`. Any other window is the
+   base account.
+2. `CLAUDE_CONFIG_DIR`, matched against the account folders.
 3. The base account.
 
 ### `json` output
 
 ```json
-[{"name":"personal","email":"you@example.com","isSignedIn":true,"until":"2026-12-01","isBase":true,"isDefault":false,"isSession":true}]
+[{"name":"personal","email":"you@example.com","isSignedIn":true,"until":"2026-12-01","isBase":true,"isDefault":false,"isSession":true,"sameLoginAs":""}]
 ```
 
 | Field | Meaning |
@@ -41,6 +43,7 @@ letter or a digit.
 | `isBase` | The account is `~/.claude` itself. |
 | `isDefault` | New terminal sessions start as this account. |
 | `isSession` | The calling process runs as this account. |
+| `sameLoginAs` | The first other account that is signed in with the same email. Empty if there is none. |
 
 ## `/account` mod
 
@@ -58,8 +61,9 @@ The pane has one block per account:
 - The first line is the name and its tags. `this session` is the account of
   the current session. `next` is the account that new terminal sessions start as.
 - The second line is the email and the days left on the login.
-- A warning line appears if the login has less than 3 days left or the account
-  is signed out.
+- A warning line appears if the login has less than 3 days left, if the
+  account is signed out, or if another account is signed in with the same
+  email (`same login as <name>`).
 - The third line has the buttons. **Re-login** appears only with the warning.
   **Use next** appears on every account except the `next` one. **Desktop** is
   on every account.

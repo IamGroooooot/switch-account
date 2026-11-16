@@ -9,6 +9,8 @@ export type Row = {
   isDefault: boolean
   /** This session runs as this account. */
   isSession: boolean
+  /** Another account signed in with the same email, or "". */
+  sameLoginAs: string
 }
 
 declare module 'claude-code' {

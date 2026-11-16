@@ -123,6 +123,11 @@ To open the Desktop app as an account, click **Desktop** in the pane, or run
 If a login has less than 3 days left, the pane shows **Re-login** for that
 account. You can also run `claude-account login <name>` at any time.
 
+Don't use `/login` inside a session to switch accounts. It signs in the
+session's own account, so that account ends up with the other account's
+login. If the pane shows `same login as <name>`, run
+`claude-account login <name>` for the account that is wrong.
+
 ## Uninstall
 
 ```bash

@@ -42,6 +42,23 @@ Both Desktop windows run their Code sessions on `~/.claude`, because the
 account comes from the app and not from the config folder. That sharing is
 what keeps memory and skills the same in both windows.
 
+For the same reason, `claude-account current` finds a Desktop session's
+account from its window and not from an email. Each Code session is a child
+process of its window, and the window that `claude-account desktop <name>`
+opened has `<name>`'s data folder on its command line. Matching the session's
+email against the terminal logins would tie the Desktop sign-in to the
+terminal login, and those two change apart from each other.
+
+## Why a login can end up in the wrong account
+
+`/login` inside a session signs in that session's account. If you run
+`/login` in a session of `personal` and pick the work account in the browser,
+`personal` now holds the work login. Nothing in the files looks broken, and
+both accounts show the same email. So `status` and the pane say
+`same login as <name>` when two accounts share an email. To switch the
+account of new sessions, use `claude-account use <name>`. To sign in again,
+use `claude-account login <name>`.
+
 ## Why the mod only calls the script
 
 All switching happens in `bin/claude-account`. The mod runs the script

@@ -18,7 +18,9 @@ printf '{"oauthAccount":{"emailAddress":"me@example.com"},"mcpServers":{"m":{"ty
 cat > "$tmp/bin/claude" <<'FAKE'
 #!/usr/bin/env bash
 if [[ "$1 $2" == "auth status" ]]; then
-  if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+  if [[ -f "${CLAUDE_CONFIG_DIR:-}/fake-email" ]]; then
+    echo "{\"loggedIn\": true, \"email\": \"$(cat "$CLAUDE_CONFIG_DIR/fake-email")\", \"loginExpiresAt\": \"2030-01-01T00:00:00Z\"}"
+  elif [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
     echo '{"loggedIn": false, "email": null, "loginExpiresAt": null}'
   else
     echo '{"loggedIn": true, "email": "me@example.com", "loginExpiresAt": "2030-01-01T00:00:00Z"}'
@@ -29,7 +31,7 @@ fi
 FAKE
 chmod +x "$tmp/bin/claude"
 export PATH="$tmp/bin:$PATH"
-unset CLAUDE_CONFIG_DIR CLAUDE_CODE_USER_EMAIL CLAUDE_ACCOUNTS_ROOT CLAUDE_ACCOUNT_BASE_NAME
+unset CLAUDE_CONFIG_DIR CLAUDE_CODE_USER_EMAIL CLAUDE_CODE_ENTRYPOINT CLAUDE_ACCOUNTS_ROOT CLAUDE_ACCOUNT_BASE_NAME
 
 ca="$repo/bin/claude-account"
 fails=0
@@ -50,6 +52,16 @@ check "use" "next is now 'work'" "$("$ca" use work)"
 check "dir" "$HOME/.claude-accounts/work/config" "$("$ca" dir)"
 check "run" "CFG=[$HOME/.claude-accounts/work/config] ARGS=-p hi" "$("$ca" run work -p hi)"
 check "current from env" "work" "$(CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/work/config" "$ca" current)"
+desk="$HOME/.claude-accounts/work/desktop-data"
+check "current in the base Desktop window" "personal me@gmail.example" \
+  "$(CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_USER_EMAIL=me@gmail.example "$ca" current)"
+check "current in the work Desktop window" "work me@work.example" \
+  "$(CLAUDE_CODE_ENTRYPOINT=claude-desktop CLAUDE_CODE_USER_EMAIL=me@work.example bash -c '"$1" current; true' "$desk/Claude" "$ca")"
+echo me@example.com > "$HOME/.claude-accounts/work/config/fake-email"
+check "status flags a copied login" "same login as work  -> claude-account login personal" "$("$ca" status)"
+check "json flags a copied login" '"name":"work","email":"me@example.com","isSignedIn":true,"until":"2030-01-01","isBase":false,"isDefault":true,"isSession":false,"sameLoginAs":"personal"' "$("$ca" json)"
+rm "$HOME/.claude-accounts/work/config/fake-email"
+check "json without a copy" '"sameLoginAs":""' "$("$ca" json)"
 check "base name setting" "* main" "$(CLAUDE_ACCOUNT_BASE_NAME=main "$ca" use main >/dev/null; CLAUDE_ACCOUNT_BASE_NAME=main "$ca" list)"
 "$ca" use work >/dev/null
 

@@ -102,9 +102,7 @@ export const register: Register = on => {
                 {row.isSignedIn && row.until && !needsLogin(row) ? ` · ${daysLeft(row)}d left` : ''}
               </Text>
               {needsLogin(row) && (
-                <Text color="warning">
-                  {row.isSignedIn ? `login ends in ${daysLeft(row)}d (${row.until})` : 'signed out'}
-                </Text>
+                <Text color="warning">{warning(row)}</Text>
               )}
             </Box>
             <Box flexDirection="row" flexWrap="wrap" columnGap={1} rowGap={1}>
@@ -143,10 +141,20 @@ function daysLeft(row: Row) {
   return Math.max(0, Math.floor((Date.parse(row.until) - Date.now()) / 86_400_000))
 }
 
+// A /login inside a session signs in that session's account, so one account
+// can end up holding another's login. The row then says so and offers
+// Re-login, because the email alone looks right.
 function needsLogin(row: Row) {
-  if (!row.isSignedIn || !row.until) return true
+  if (!row.isSignedIn || !row.until || row.sameLoginAs) return true
 
   return daysLeft(row) < SOON_DAYS
+}
+
+function warning(row: Row) {
+  if (!row.isSignedIn) return 'signed out'
+  if (row.sameLoginAs) return `same login as ${row.sameLoginAs}`
+
+  return `login ends in ${daysLeft(row)}d (${row.until})`
 }
 
 // This session's account, then "→ next" only when new terminal sessions start
@@ -168,9 +176,10 @@ function listText(list: Row[]) {
   if (list.length === 0) return 'No accounts found. Is claude-account installed?'
   const lines = list.map(row => {
     const state = row.isSignedIn ? `signed in until ${row.until || '?'}` : 'not signed in'
+    const same = row.sameLoginAs ? `  same login as ${row.sameLoginAs}` : ''
     const tags = [row.isSession && 'this session', row.isDefault && 'next'].filter(Boolean).join(', ')
 
-    return `${row.name.padEnd(12)} ${(row.email || '-').padEnd(28)} ${state}${tags ? `  (${tags})` : ''}`
+    return `${row.name.padEnd(12)} ${(row.email || '-').padEnd(28)} ${state}${tags ? `  (${tags})` : ''}${same}`
   })
 
   return lines.join('\n')

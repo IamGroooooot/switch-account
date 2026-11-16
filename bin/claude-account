@@ -213,10 +213,31 @@ cmd_use() {
   echo "next is now '$name'${email:+ ($email)}. New terminal sessions start as it; open ones keep their account."
 }
 
-# The account of this process: CLAUDE_CONFIG_DIR, else the email a host
-# handed down (Desktop), else the base account. Prints "<name> <email>".
+# The Desktop window a Code session runs in decides its account, not the
+# terminal login: an ancestor process whose command line names an account's
+# desktop-data folder is that account's window; any other window is the
+# base account's.
+desktop_account() {
+  local pid="$PPID" cmd name
+  while [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]]; do
+    cmd="$(ps -o command= -p "$pid" 2>/dev/null)" || break
+    for name in $(accounts); do
+      is_base "$name" && continue
+      if [[ "$cmd" == *"$ROOT/$name/desktop-data"* ]]; then echo "$name"; return 0; fi
+    done
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  done
+  echo "$BASE_NAME"
+}
+
+# The account of this process: the Desktop window for a Desktop Code session,
+# else CLAUDE_CONFIG_DIR, else the base account. Prints "<name> <email>".
 cmd_current() {
   local name
+  if [[ "${CLAUDE_CODE_ENTRYPOINT:-}" == claude-desktop ]]; then
+    name="$(desktop_account)"
+    echo "$name ${CLAUDE_CODE_USER_EMAIL:-$(email_of "$name")}"; return 0
+  fi
   if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
     for name in $(accounts); do
       if [[ "$(config_dir "$name")" == "${CLAUDE_CONFIG_DIR%/}" ]]; then
@@ -225,15 +246,30 @@ cmd_current() {
     done
     echo "? ${CLAUDE_CONFIG_DIR}"; return 0
   fi
-  if [[ -n "${CLAUDE_CODE_USER_EMAIL:-}" ]]; then
-    for name in $(accounts); do
-      if [[ "$(email_of "$name")" == "$CLAUDE_CODE_USER_EMAIL" ]]; then
-        echo "$name $CLAUDE_CODE_USER_EMAIL"; return 0
-      fi
-    done
-    echo "? $CLAUDE_CODE_USER_EMAIL"; return 0
-  fi
   echo "$BASE_NAME $(email_of "$BASE_NAME")"
+}
+
+# Every account's login state, one "<name> <isSignedIn> <email> <until>" line
+# each. A /login inside a session writes to that session's account, so one
+# account's login can end up as a copy of another's.
+STATES=()
+load_states() {
+  local name logged email until
+  STATES=()
+  for name in $(accounts); do
+    read -r logged email until < <(login_state "$name")
+    STATES+=("$name $logged $email $until")
+  done
+}
+
+# The first other account signed in with the same email, or nothing.
+same_login_as() {
+  local name="$1" email="$2" line n logged e
+  [[ "$email" == "-" || -z "$email" ]] && return 0
+  for line in "${STATES[@]}"; do
+    read -r n logged e _ <<< "$line"
+    if [[ "$n" != "$name" && "$e" == "$email" ]]; then echo "$n"; return 0; fi
+  done
 }
 
 cmd_list() {
@@ -247,32 +283,40 @@ cmd_list() {
 }
 
 cmd_status() {
-  local names name logged email until
-  if [[ -n "${1:-}" ]]; then require "$1"; names="$1"; else names="$(accounts)"; fi
-  for name in $names; do
-    read -r logged email until < <(login_state "$name")
+  local line name logged email until same
+  [[ -n "${1:-}" ]] && require "$1"
+  load_states
+  for line in "${STATES[@]}"; do
+    read -r name logged email until <<< "$line"
+    [[ -n "${1:-}" && "$name" != "$1" ]] && continue
     if [[ "$logged" == "true" ]]; then
       printf '%-12s signed in  %s%s\n' "$name" "$email" "${until:+  (until $until)}"
     else
       printf '%-12s NOT signed in  -> claude-account login %s\n' "$name" "$name"
     fi
+    same="$(same_login_as "$name" "$email")"
+    if [[ -n "$same" ]]; then
+      printf '%-12s same login as %s  -> claude-account login %s\n' "" "$same" "$name"
+    fi
   done
 }
 
-# [{"name","email","isSignedIn","until","isBase","isDefault","isSession"}]
+# [{"name","email","isSignedIn","until","isBase","isDefault","isSession","sameLoginAs"}]
 cmd_json() {
-  local a session name logged email until sep=""
+  local a session line name logged email until sep=""
   a="$(active)"
   session="$(cmd_current | cut -d' ' -f1)"
+  load_states
   printf '['
-  for name in $(accounts); do
-    read -r logged email until < <(login_state "$name")
-    [[ "$email" == "-" ]] && email=""
-    printf '%s{"name":"%s","email":"%s","isSignedIn":%s,"until":"%s","isBase":%s,"isDefault":%s,"isSession":%s}' \
-      "$sep" "$name" "${email//\"/}" "$([[ "$logged" == true ]] && echo true || echo false)" "$until" \
+  for line in "${STATES[@]}"; do
+    read -r name logged email until <<< "$line"
+    printf '%s{"name":"%s","email":"%s","isSignedIn":%s,"until":"%s","isBase":%s,"isDefault":%s,"isSession":%s,"sameLoginAs":"%s"}' \
+      "$sep" "$name" "$([[ "$email" == "-" ]] || echo "${email//\"/}")" \
+      "$([[ "$logged" == true ]] && echo true || echo false)" "$until" \
       "$(is_base "$name" && echo true || echo false)" \
       "$([[ "$name" == "$a" ]] && echo true || echo false)" \
-      "$([[ "$name" == "$session" ]] && echo true || echo false)"
+      "$([[ "$name" == "$session" ]] && echo true || echo false)" \
+      "$(same_login_as "$name" "$email")"
     sep=","
   done
   printf ']\n'

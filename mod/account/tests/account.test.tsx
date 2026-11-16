@@ -1,8 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
 const ROWS = [
-  { name: 'personal', email: 'me@example.com', isSignedIn: true, until: '2000-01-01', isBase: true, isDefault: false, isSession: true },
-  { name: 'work', email: 'me@work.example', isSignedIn: true, until: '2999-12-31', isBase: false, isDefault: true, isSession: false },
+  { name: 'personal', email: 'me@example.com', isSignedIn: true, until: '2000-01-01', isBase: true, isDefault: false, isSession: true, sameLoginAs: '' },
+  { name: 'work', email: 'me@work.example', isSignedIn: true, until: '2999-12-31', isBase: false, isDefault: true, isSession: false, sameLoginAs: '' },
 ]
 
 // Each hook stands for the engine. `process.run` answers as the
@@ -119,4 +119,20 @@ test('the terminal keeps no account line until /account', async ($, on) => {
 
   const out = await $.command.run({ command: 'account', args: '' } as any)
   expect(out.text).toContain('personal → work')
+})
+
+test('an account holding another account\'s login says so and offers Re-login', async ($, on) => {
+  engine(on)
+  const twin = { ...ROWS[0], email: 'me@work.example', until: '2999-12-31', sameLoginAs: 'work' }
+  SCRIPT_OUT.json = JSON.stringify([twin, { ...ROWS[1], sameLoginAs: 'personal' }])
+  try {
+    await $.command.run({ command: 'account', args: '' } as any)
+    const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Text', text: /same login as work/ })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'login-personal' })).toBeTruthy()
+    expect(await ui.find({ type: 'Button', key: 'login-work' })).toBeTruthy()
+    await ui.unmount()
+  } finally {
+    SCRIPT_OUT.json = JSON.stringify(ROWS)
+  }
 })
