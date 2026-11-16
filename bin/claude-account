@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+# claude-account: keep several Claude Code logins side by side and pick one.
+#
+# The base account lives in ~/.claude itself (CLAUDE_CONFIG_DIR unset). Every
+# other account gets its own CLAUDE_CONFIG_DIR, so its login is stored apart
+# (on macOS, a Keychain entry keyed to that folder) and a token refresh in one
+# account never touches another. Everything else in ~/.claude (memory,
+# skills, plugins, mods, rules, settings, history) is shared through symlinks.
+#
+# Layout:
+#   ~/.claude                               the base account
+#   $ROOT/<name>/config                     CLAUDE_CONFIG_DIR for <name>
+#   $ROOT/<name>/desktop-data               Desktop app data folder (macOS)
+#   $ROOT/active                            account for new terminal sessions
+#
+# Settings (environment):
+#   CLAUDE_ACCOUNTS_ROOT      where accounts live (default ~/.claude-accounts)
+#   CLAUDE_ACCOUNT_BASE_NAME  name of the base account (default "personal")
+#   CLAUDE_ACCOUNT_CLAUDE_BIN the claude executable (default "claude")
+set -euo pipefail
+
+BASE="$HOME/.claude"
+ROOT="${CLAUDE_ACCOUNTS_ROOT:-$HOME/.claude-accounts}"
+BASE_NAME="${CLAUDE_ACCOUNT_BASE_NAME:-personal}"
+CLAUDE_BIN="${CLAUDE_ACCOUNT_CLAUDE_BIN:-claude}"
+
+# Per-account entries: never linked to ~/.claude.
+# .credentials.json and mcp-needs-auth-cache.json hold login state; daemon and
+# backups belong to one config folder's own process and .claude.json.
+NOT_SHARED=(.credentials.json mcp-needs-auth-cache.json daemon backups .DS_Store)
+
+die() { echo "claude-account: $*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+usage: claude-account <command> [name]
+
+  list               accounts and their emails; * marks the next account
+  status [name]      login state and expiry (default: every account)
+  add <name>         create an account that shares ~/.claude
+  login <name>       sign in to <name> (opens the browser)
+  use <name>         start new terminal sessions as <name>
+  current            the account this process runs as
+  run <name> [args]  run claude once as <name>
+  desktop <name>     open the Desktop app as <name> (macOS)
+  link <name>        re-link shared ~/.claude entries into <name>
+  dir [name]         CLAUDE_CONFIG_DIR for <name> (empty for the base account)
+  json               every account as JSON (used by the /account mod)
+
+The base account is "$BASE_NAME" (~/.claude).
+EOF
+}
+
+valid_name() { [[ "$1" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "bad account name: $1"; }
+
+is_base() { [[ "$1" == "$BASE_NAME" ]]; }
+
+config_dir() {  # empty for the base account
+  is_base "$1" && return 0
+  echo "$ROOT/$1/config"
+}
+
+claude_json() {
+  if is_base "$1"; then echo "$HOME/.claude.json"
+  else echo "$ROOT/$1/config/.claude.json"; fi
+}
+
+exists() { is_base "$1" || [[ -d "$ROOT/$1/config" ]]; }
+require() { exists "$1" || die "no account '$1' (claude-account add $1)"; }
+
+accounts() {
+  echo "$BASE_NAME"
+  [[ -d "$ROOT" ]] || return 0
+  local d
+  for d in "$ROOT"/*/config; do
+    [[ -d "$d" ]] && basename "$(dirname "$d")"
+  done
+  return 0
+}
+
+active() {
+  local a=""
+  [[ -f "$ROOT/active" ]] && a="$(tr -d '[:space:]' < "$ROOT/active")"
+  if [[ -n "$a" ]] && exists "$a"; then echo "$a"; else echo "$BASE_NAME"; fi
+}
+
+# JSON on stdin, a dotted key path -> the raw value, or nothing.
+# plutil ships with macOS; python3 covers everywhere else.
+json_raw() {
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -extract "$1" raw -o - - 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -I -c '
+import json, sys
+try:
+    v = json.load(sys.stdin)
+    for k in sys.argv[1].split("."):
+        v = v[k]
+except Exception:
+    sys.exit(0)
+print(str(v).lower() if isinstance(v, bool) else v)' "$1"
+  else
+    die "needs plutil or python3 to read JSON"
+  fi
+}
+
+# JSON on stdin, a key -> that value re-encoded as JSON, or nothing.
+json_value() {
+  if command -v plutil >/dev/null 2>&1; then
+    plutil -extract "$1" json -o - - 2>/dev/null || true
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -I -c '
+import json, sys
+try:
+    print(json.dumps(json.load(sys.stdin)[sys.argv[1]]))
+except Exception:
+    pass' "$1"
+  fi
+}
+
+email_of() {
+  local f; f="$(claude_json "$1")"
+  [[ -f "$f" ]] || return 0
+  json_raw oauthAccount.emailAddress < "$f"
+}
+
+is_not_shared() {
+  local n
+  for n in "${NOT_SHARED[@]}"; do [[ "$1" == "$n" ]] && return 0; done
+  return 1
+}
+
+link_shared() {
+  local name="$1" dir entry base target
+  dir="$(config_dir "$name")"
+  [[ -n "$dir" ]] || return 0
+  mkdir -p "$dir"
+  shopt -s dotglob nullglob
+  for entry in "$BASE"/*; do
+    base="$(basename "$entry")"
+    is_not_shared "$base" && continue
+    target="$dir/$base"
+    if [[ -L "$target" ]]; then continue
+    elif [[ -e "$target" ]]; then
+      echo "claude-account: kept $target (exists, not a link)" >&2
+    else
+      ln -s "$entry" "$target"
+    fi
+  done
+  # Drop links whose source disappeared from ~/.claude.
+  for entry in "$dir"/*; do
+    if [[ -L "$entry" && ! -e "$entry" ]]; then rm "$entry"; fi
+  done
+  shopt -u dotglob nullglob
+}
+
+# Run claude as an account. Auth handed down by a host (the Desktop app's
+# Code tab) is cleared, so the account's own login is the one used.
+run_as() {
+  local name="$1"; shift
+  local dir; dir="$(config_dir "$name")"
+  local -a clear=(-u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USER_EMAIL -u CLAUDE_CODE_ACCOUNT_UUID
+                  -u CLAUDE_CODE_ORGANIZATION_UUID -u CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH
+                  -u CLAUDE_CODE_ENTRYPOINT -u CLAUDECODE -u ANTHROPIC_BASE_URL)
+  if [[ -n "$dir" ]]; then
+    env "${clear[@]}" CLAUDE_CONFIG_DIR="$dir" "$CLAUDE_BIN" "$@"
+  else
+    env "${clear[@]}" -u CLAUDE_CONFIG_DIR "$CLAUDE_BIN" "$@"
+  fi
+}
+
+# One account's login state from `claude auth status`, never a secret:
+# prints "<isSignedIn> <email> <until-date>".
+login_state() {
+  local out logged email exp
+  out="$(run_as "$1" auth status 2>/dev/null || true)"
+  logged="$(printf '%s' "$out" | json_raw loggedIn)"
+  email="$(printf '%s' "$out" | json_raw email)"
+  exp="$(printf '%s' "$out" | json_raw loginExpiresAt)"
+  [[ -n "$email" ]] || email="$(email_of "$1")"
+  printf '%s %s %s\n' "${logged:-false}" "${email:--}" "${exp%%T*}"
+}
+
+cmd_add() {
+  local name="${1:-}"; [[ -n "$name" ]] || die "add needs a name"
+  valid_name "$name"
+  is_base "$name" && die "'$name' is the base account (~/.claude)"
+  exists "$name" && die "account '$name' exists"
+  mkdir -p "$ROOT/$name/config" "$ROOT/$name/desktop-data"
+  chmod 700 "$ROOT" "$ROOT/$name"
+  link_shared "$name"
+  # Carry over user-scoped MCP servers so tools look the same in every account.
+  local mcp=""
+  [[ -f "$HOME/.claude.json" ]] && mcp="$(json_value mcpServers < "$HOME/.claude.json")"
+  printf '{"hasCompletedOnboarding":true,"mcpServers":%s}\n' "${mcp:-{\}}" \
+    > "$ROOT/$name/config/.claude.json"
+  chmod 600 "$ROOT/$name/config/.claude.json"
+  echo "added '$name'. Sign in with: claude-account login $name"
+}
+
+cmd_login() {
+  local name="${1:-}"; [[ -n "$name" ]] || die "login needs a name"
+  require "$name"; link_shared "$name"
+  run_as "$name" auth login
+}
+
+cmd_use() {
+  local name="${1:-}"; [[ -n "$name" ]] || die "use needs a name"
+  require "$name"; link_shared "$name"
+  mkdir -p "$ROOT"
+  echo "$name" > "$ROOT/active"
+  local email; email="$(email_of "$name")"
+  echo "next is now '$name'${email:+ ($email)}. New terminal sessions start as it; open ones keep their account."
+}
+
+# The account of this process: CLAUDE_CONFIG_DIR, else the email a host
+# handed down (Desktop), else the base account. Prints "<name> <email>".
+cmd_current() {
+  local name
+  if [[ -n "${CLAUDE_CONFIG_DIR:-}" ]]; then
+    for name in $(accounts); do
+      if [[ "$(config_dir "$name")" == "${CLAUDE_CONFIG_DIR%/}" ]]; then
+        echo "$name $(email_of "$name")"; return 0
+      fi
+    done
+    echo "? ${CLAUDE_CONFIG_DIR}"; return 0
+  fi
+  if [[ -n "${CLAUDE_CODE_USER_EMAIL:-}" ]]; then
+    for name in $(accounts); do
+      if [[ "$(email_of "$name")" == "$CLAUDE_CODE_USER_EMAIL" ]]; then
+        echo "$name $CLAUDE_CODE_USER_EMAIL"; return 0
+      fi
+    done
+    echo "? $CLAUDE_CODE_USER_EMAIL"; return 0
+  fi
+  echo "$BASE_NAME $(email_of "$BASE_NAME")"
+}
+
+cmd_list() {
+  local a name email mark
+  a="$(active)"
+  for name in $(accounts); do
+    email="$(email_of "$name")"
+    mark=" "; [[ "$name" == "$a" ]] && mark="*"
+    printf '%s %-12s %s\n' "$mark" "$name" "${email:-(not signed in)}"
+  done
+}
+
+cmd_status() {
+  local names name logged email until
+  if [[ -n "${1:-}" ]]; then require "$1"; names="$1"; else names="$(accounts)"; fi
+  for name in $names; do
+    read -r logged email until < <(login_state "$name")
+    if [[ "$logged" == "true" ]]; then
+      printf '%-12s signed in  %s%s\n' "$name" "$email" "${until:+  (until $until)}"
+    else
+      printf '%-12s NOT signed in  -> claude-account login %s\n' "$name" "$name"
+    fi
+  done
+}
+
+# [{"name","email","isSignedIn","until","isBase","isDefault","isSession"}]
+cmd_json() {
+  local a session name logged email until sep=""
+  a="$(active)"
+  session="$(cmd_current | cut -d' ' -f1)"
+  printf '['
+  for name in $(accounts); do
+    read -r logged email until < <(login_state "$name")
+    [[ "$email" == "-" ]] && email=""
+    printf '%s{"name":"%s","email":"%s","isSignedIn":%s,"until":"%s","isBase":%s,"isDefault":%s,"isSession":%s}' \
+      "$sep" "$name" "${email//\"/}" "$([[ "$logged" == true ]] && echo true || echo false)" "$until" \
+      "$(is_base "$name" && echo true || echo false)" \
+      "$([[ "$name" == "$a" ]] && echo true || echo false)" \
+      "$([[ "$name" == "$session" ]] && echo true || echo false)"
+    sep=","
+  done
+  printf ']\n'
+}
+
+cmd_run() {
+  local name="${1:-}"; [[ -n "$name" ]] || die "run needs a name"; shift
+  require "$name"; link_shared "$name"
+  run_as "$name" "$@"
+}
+
+# The Desktop app's Code tab takes its account from the app's own sign-in,
+# not from CLAUDE_CONFIG_DIR. A second app instance with its own data folder
+# (Chromium's --user-data-dir) keeps a second sign-in next to the first.
+cmd_desktop() {
+  local name="${1:-}"; [[ -n "$name" ]] || die "desktop needs a name"
+  [[ "$(uname -s)" == Darwin ]] || die "desktop is macOS only"
+  if is_base "$name"; then
+    open -a Claude
+  else
+    require "$name"
+    mkdir -p "$ROOT/$name/desktop-data"
+    open -n -a Claude --args --user-data-dir="$ROOT/$name/desktop-data"
+  fi
+  echo "opened Desktop as '$name'"
+}
+
+main() {
+  local cmd="${1:-}"; shift || true
+  case "$cmd" in
+    list|ls)  cmd_list ;;
+    status)   cmd_status "$@" ;;
+    add)      cmd_add "$@" ;;
+    login)    cmd_login "$@" ;;
+    use)      cmd_use "$@" ;;
+    current)  cmd_current ;;
+    run)      cmd_run "$@" ;;
+    desktop)  cmd_desktop "$@" ;;
+    link)     require "${1:-}"; link_shared "$1" ;;
+    dir)      local n="${1:-$(active)}"; require "$n"; config_dir "$n" ;;
+    json)     cmd_json ;;
+    ""|-h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

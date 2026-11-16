@@ -1,0 +1,14 @@
+{
+  "name": "switch-account",
+  "owner": {
+    "name": "switch-account"
+  },
+  "plugins": [
+    {
+      "name": "account",
+      "source": "./mod/account",
+      "description": "Switch between Claude Code accounts from a clickable pane or /account"
+    }
+  ],
+  "description": "Use several Claude Code accounts side by side and switch with /account"
+}
