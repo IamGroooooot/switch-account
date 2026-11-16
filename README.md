@@ -32,11 +32,14 @@ install.
 
 ## Install with Claude Code
 
-Paste this prompt into a Claude Code session. Replace `<repository URL>` with
-the address of this repository.
+The repository is private. To install it, you need access to it on GitHub,
+and git on your machine must be signed in to GitHub, for example with
+`gh auth login`.
+
+Paste this prompt into a Claude Code session.
 
 ```text
-Install switch-account from <repository URL> on this machine.
+Install switch-account from https://github.com/IamGroooooot/switch-account on this machine.
 
 1. Clone the repository to ~/switch-account. If that folder exists, run git pull there instead.
 2. Read install.sh. Then tell me which shell startup file `./install.sh --all` will change, and wait for my yes.
@@ -57,7 +60,7 @@ shell startup file and the browser sign-in.
 1. Clone the repository and go into it:
 
    ```bash
-   git clone <repository URL> ~/switch-account
+   git clone https://github.com/IamGroooooot/switch-account ~/switch-account
    cd ~/switch-account
    ```
 

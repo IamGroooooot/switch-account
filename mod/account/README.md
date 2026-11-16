@@ -9,7 +9,7 @@ To install the script, the shell hook, and this mod together, follow the
 repository README. To install only the mod:
 
 ```text
-/plugin marketplace add <owner>/<repo>
+/plugin marketplace add IamGroooooot/switch-account
 /plugin install account@switch-account
 ```
 
