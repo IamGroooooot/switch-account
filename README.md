@@ -32,10 +32,6 @@ install.
 
 ## Install with Claude Code
 
-The repository is private. To install it, you need access to it on GitHub,
-and git on your machine must be signed in to GitHub, for example with
-`gh auth login`.
-
 Paste this prompt into a Claude Code session.
 
 ```text
